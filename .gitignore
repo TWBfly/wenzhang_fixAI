@@ -1,0 +1,12 @@
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+.env
+.idea/
+.vscode/
+scratch/
+output_test/
+output_sqlite_test/
+db/*.sqlite
+logic_ledger.json.bak

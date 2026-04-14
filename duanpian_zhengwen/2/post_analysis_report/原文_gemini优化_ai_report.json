@@ -1,0 +1,383 @@
+{
+  "total_words": 15632,
+  "chapter_count": 1,
+  "ai_score": 2.33,
+  "global_rule_counts": {
+    "百科式套话": 5,
+    "微微": 2,
+    "显然": 1,
+    "缓缓": 1,
+    "顿了顿": 1,
+    "不是A而是B": 1,
+    "目光落在": 1,
+    "仿佛": 1
+  },
+  "global_issue_counts": {
+    "narration_overuse": 6,
+    "style_repeat": 4,
+    "transition_overuse": 2,
+    "syntax_repeat": 1
+  },
+  "chapters": [
+    {
+      "chapter": "全文",
+      "word_count": 15632,
+      "paragraph_count": 521,
+      "sentence_count": 1121,
+      "ai_score": 2.33,
+      "issue_summary": {
+        "narration_overuse": 6,
+        "style_repeat": 4,
+        "transition_overuse": 2,
+        "syntax_repeat": 1
+      },
+      "paragraph_tag_distribution": {
+        "dialogue": 272,
+        "neutral": 199,
+        "action": 76,
+        "environment": 19,
+        "environment_buffer": 5,
+        "transition_buffer": 1,
+        "explain": 1
+      },
+      "top_rules": [
+        {
+          "rule_name": "百科式套话",
+          "count": 5
+        },
+        {
+          "rule_name": "微微",
+          "count": 2
+        },
+        {
+          "rule_name": "显然",
+          "count": 1
+        },
+        {
+          "rule_name": "缓缓",
+          "count": 1
+        },
+        {
+          "rule_name": "顿了顿",
+          "count": 1
+        },
+        {
+          "rule_name": "不是A而是B",
+          "count": 1
+        },
+        {
+          "rule_name": "目光落在",
+          "count": 1
+        },
+        {
+          "rule_name": "仿佛",
+          "count": 1
+        }
+      ],
+      "suspicious_sentences": [
+        {
+          "paragraph": 20,
+          "sentence": 2,
+          "text": "”裴砚衡显然没料到这一出，他额角的青筋跳了跳，眼神里闪过一丝极度的嫌恶。",
+          "rules": [
+            "显然"
+          ],
+          "issue_types": [
+            "narration_overuse"
+          ]
+        },
+        {
+          "paragraph": 38,
+          "sentence": 2,
+          "text": "”裴砚衡的语气森然，手掌再次覆上了刀柄。",
+          "rules": [
+            "百科式套话"
+          ],
+          "issue_types": [
+            "narration_overuse"
+          ]
+        },
+        {
+          "paragraph": 69,
+          "sentence": 2,
+          "text": "香灰还没扫净，供案虽然扶正了，但那条被她硬生生扳回来的腿，还在微微晃动。",
+          "rules": [
+            "微微"
+          ],
+          "issue_types": [
+            "style_repeat"
+          ]
+        },
+        {
+          "paragraph": 85,
+          "sentence": 2,
+          "text": "”崔老夫人缓缓站起身，念珠在手里绕了两圈，“你是个聪明的孩子，应该知道，这伯府的门槛高，不是靠这种泼妇劲儿就能站稳的。",
+          "rules": [
+            "缓缓"
+          ],
+          "issue_types": [
+            "style_repeat"
+          ]
+        },
+        {
+          "paragraph": 102,
+          "sentence": 1,
+          "text": "她顿了顿，眼神变得锐利。",
+          "rules": [
+            "顿了顿"
+          ],
+          "issue_types": [
+            "transition_overuse"
+          ]
+        },
+        {
+          "paragraph": 116,
+          "sentence": 2,
+          "text": "不过，查之前，记得先把您那颗偏得没边的真心收好了，别查到最后，发现是一场泼皮猴戏，自己还成了最大的那只猴儿。",
+          "rules": [
+            "百科式套话"
+          ],
+          "issue_types": [
+            "narration_overuse"
+          ]
+        },
+        {
+          "paragraph": 129,
+          "sentence": 1,
+          "text": "林挽枝看着青禾那张担忧的脸，心里微微一暖，却又觉得有点无奈。",
+          "rules": [
+            "微微"
+          ],
+          "issue_types": [
+            "style_repeat"
+          ]
+        },
+        {
+          "paragraph": 149,
+          "sentence": 1,
+          "text": "炭盆里最后一星火光挣扎着熄了，那点微薄的暖意散得比鬼影还快，屋子里的空气冷得发硬，像是要把肺叶子都冻住。",
+          "rules": [
+            "百科式套话"
+          ],
+          "issue_types": [
+            "narration_overuse"
+          ]
+        },
+        {
+          "paragraph": 150,
+          "sentence": 2,
+          "text": "指尖触到的不是温热的余烬，而是那种黏糊糊、带着湿气的黑灰，里头还混着没烧透的碎木渣子。",
+          "rules": [
+            "不是A而是B"
+          ],
+          "issue_types": [
+            "syntax_repeat"
+          ]
+        },
+        {
+          "paragraph": 261,
+          "sentence": 1,
+          "text": "裴砚衡的目光落在地上那道浅浅的火箸划痕上。",
+          "rules": [
+            "目光落在"
+          ],
+          "issue_types": [
+            "transition_overuse"
+          ]
+        },
+        {
+          "paragraph": 340,
+          "sentence": 1,
+          "text": "他的话像是一块重石，砸碎了柳月柔最后的侥幸。",
+          "rules": [
+            "百科式套话"
+          ],
+          "issue_types": [
+            "narration_overuse"
+          ]
+        },
+        {
+          "paragraph": 379,
+          "sentence": 1,
+          "text": "裴砚衡深吸一口气，他看着林挽枝，那个女人连头都没抬，依旧在专注地数着银子，仿佛那是这世上唯一值得她费神的东西。",
+          "rules": [
+            "仿佛"
+          ],
+          "issue_types": [
+            "style_repeat"
+          ]
+        },
+        {
+          "paragraph": 517,
+          "sentence": 2,
+          "text": "林挽枝坐在马车里，最后看了一眼那匾额。",
+          "rules": [
+            "百科式套话"
+          ],
+          "issue_types": [
+            "narration_overuse"
+          ]
+        }
+      ],
+      "empty_transition_blocks": [],
+      "rewrite_suggestions": [
+        {
+          "rule_name": "显然",
+          "paragraph": 20,
+          "sentence": 2,
+          "original": "”裴砚衡显然没料到这一出，他额角的青筋跳了跳，眼神里闪过一丝极度的嫌恶。",
+          "principle": "把解释型旁白改为人物通过看到、听到、触到的信息自行显现。",
+          "suggestions": [
+            "把‘她知道/他明白’改成对方一句带压迫感的对白。",
+            "把‘这意味着’改成脚步声、称呼变化、桌上信物等可见信息。",
+            "减少替读者下结论，让读者自己推断。"
+          ]
+        },
+        {
+          "rule_name": "百科式套话",
+          "paragraph": 38,
+          "sentence": 2,
+          "original": "”裴砚衡的语气森然，手掌再次覆上了刀柄。",
+          "principle": "把解释型旁白改为人物通过看到、听到、触到的信息自行显现。",
+          "suggestions": [
+            "把‘她知道/他明白’改成对方一句带压迫感的对白。",
+            "把‘这意味着’改成脚步声、称呼变化、桌上信物等可见信息。",
+            "减少替读者下结论，让读者自己推断。"
+          ]
+        },
+        {
+          "rule_name": "微微",
+          "paragraph": 69,
+          "sentence": 2,
+          "original": "香灰还没扫净，供案虽然扶正了，但那条被她硬生生扳回来的腿，还在微微晃动。",
+          "principle": "减少过渡缓冲，直接切入动作、冲突或对白。",
+          "suggestions": [
+            "删掉‘顿了顿/一时间/半晌’等垫片式过渡。",
+            "让下一句直接发生动作或冲突。",
+            "用短句拉节奏，压缩说明。"
+          ]
+        },
+        {
+          "rule_name": "缓缓",
+          "paragraph": 85,
+          "sentence": 2,
+          "original": "”崔老夫人缓缓站起身，念珠在手里绕了两圈，“你是个聪明的孩子，应该知道，这伯府的门槛高，不是靠这种泼妇劲儿就能站稳的。",
+          "principle": "减少过渡缓冲，直接切入动作、冲突或对白。",
+          "suggestions": [
+            "删掉‘顿了顿/一时间/半晌’等垫片式过渡。",
+            "让下一句直接发生动作或冲突。",
+            "用短句拉节奏，压缩说明。"
+          ]
+        },
+        {
+          "rule_name": "顿了顿",
+          "paragraph": 102,
+          "sentence": 1,
+          "original": "她顿了顿，眼神变得锐利。",
+          "principle": "减少过渡缓冲，直接切入动作、冲突或对白。",
+          "suggestions": [
+            "删掉‘顿了顿/一时间/半晌’等垫片式过渡。",
+            "让下一句直接发生动作或冲突。",
+            "用短句拉节奏，压缩说明。"
+          ]
+        },
+        {
+          "rule_name": "百科式套话",
+          "paragraph": 116,
+          "sentence": 2,
+          "original": "不过，查之前，记得先把您那颗偏得没边的真心收好了，别查到最后，发现是一场泼皮猴戏，自己还成了最大的那只猴儿。",
+          "principle": "把解释型旁白改为人物通过看到、听到、触到的信息自行显现。",
+          "suggestions": [
+            "把‘她知道/他明白’改成对方一句带压迫感的对白。",
+            "把‘这意味着’改成脚步声、称呼变化、桌上信物等可见信息。",
+            "减少替读者下结论，让读者自己推断。"
+          ]
+        },
+        {
+          "rule_name": "微微",
+          "paragraph": 129,
+          "sentence": 1,
+          "original": "林挽枝看着青禾那张担忧的脸，心里微微一暖，却又觉得有点无奈。",
+          "principle": "减少过渡缓冲，直接切入动作、冲突或对白。",
+          "suggestions": [
+            "删掉‘顿了顿/一时间/半晌’等垫片式过渡。",
+            "让下一句直接发生动作或冲突。",
+            "用短句拉节奏，压缩说明。"
+          ]
+        },
+        {
+          "rule_name": "百科式套话",
+          "paragraph": 149,
+          "sentence": 1,
+          "original": "炭盆里最后一星火光挣扎着熄了，那点微薄的暖意散得比鬼影还快，屋子里的空气冷得发硬，像是要把肺叶子都冻住。",
+          "principle": "把解释型旁白改为人物通过看到、听到、触到的信息自行显现。",
+          "suggestions": [
+            "把‘她知道/他明白’改成对方一句带压迫感的对白。",
+            "把‘这意味着’改成脚步声、称呼变化、桌上信物等可见信息。",
+            "减少替读者下结论，让读者自己推断。"
+          ]
+        },
+        {
+          "rule_name": "不是A而是B",
+          "paragraph": 150,
+          "sentence": 2,
+          "original": "指尖触到的不是温热的余烬，而是那种黏糊糊、带着湿气的黑灰，里头还混着没烧透的碎木渣子。",
+          "principle": "避免模板反转句式，直接给出新的动作、判断或对白。",
+          "suggestions": [
+            "删去对比框架，直接陈述人物新的选择。",
+            "用具体场景信息取代抽象反转。",
+            "优先改成一句更有压迫感的对白。"
+          ]
+        },
+        {
+          "rule_name": "目光落在",
+          "paragraph": 261,
+          "sentence": 1,
+          "original": "裴砚衡的目光落在地上那道浅浅的火箸划痕上。",
+          "principle": "减少过渡缓冲，直接切入动作、冲突或对白。",
+          "suggestions": [
+            "删掉‘顿了顿/一时间/半晌’等垫片式过渡。",
+            "让下一句直接发生动作或冲突。",
+            "用短句拉节奏，压缩说明。"
+          ]
+        },
+        {
+          "rule_name": "百科式套话",
+          "paragraph": 340,
+          "sentence": 1,
+          "original": "他的话像是一块重石，砸碎了柳月柔最后的侥幸。",
+          "principle": "把解释型旁白改为人物通过看到、听到、触到的信息自行显现。",
+          "suggestions": [
+            "把‘她知道/他明白’改成对方一句带压迫感的对白。",
+            "把‘这意味着’改成脚步声、称呼变化、桌上信物等可见信息。",
+            "减少替读者下结论，让读者自己推断。"
+          ]
+        },
+        {
+          "rule_name": "仿佛",
+          "paragraph": 379,
+          "sentence": 1,
+          "original": "裴砚衡深吸一口气，他看着林挽枝，那个女人连头都没抬，依旧在专注地数着银子，仿佛那是这世上唯一值得她费神的东西。",
+          "principle": "减少过渡缓冲，直接切入动作、冲突或对白。",
+          "suggestions": [
+            "删掉‘顿了顿/一时间/半晌’等垫片式过渡。",
+            "让下一句直接发生动作或冲突。",
+            "用短句拉节奏，压缩说明。"
+          ]
+        },
+        {
+          "rule_name": "百科式套话",
+          "paragraph": 517,
+          "sentence": 2,
+          "original": "林挽枝坐在马车里，最后看了一眼那匾额。",
+          "principle": "把解释型旁白改为人物通过看到、听到、触到的信息自行显现。",
+          "suggestions": [
+            "把‘她知道/他明白’改成对方一句带压迫感的对白。",
+            "把‘这意味着’改成脚步声、称呼变化、桌上信物等可见信息。",
+            "减少替读者下结论，让读者自己推断。"
+          ]
+        }
+      ]
+    }
+  ]
+}

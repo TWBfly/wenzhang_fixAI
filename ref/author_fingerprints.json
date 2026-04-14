@@ -1,0 +1,28 @@
+{
+  "synthesized_human_traits": {
+    "sensory_anchors": {
+      "priority": ["smell", "tactile", "internal_physiological", "sound", "visual_specific"],
+      "rule": "Every scene entry or significant paragraph break must lead with a non-visual sensory detail.",
+      "goal": "Trigger visceral empathy before cognitive processing."
+    },
+    "narrative_asymmetry": {
+      "sentence_length": "Alternating short, punchy fragments with long, multi-clausal internal monologues. Avoid 15-25 character 'balanced' sentences.",
+      "information_flow": "Drip-feed information. Show character reaction (widened pupils, stiffened throat) before explaining the cause."
+    },
+    "life_anchors": {
+      "details": ["mundane hunger", "clothing texture", "uncomfortable posture", "distraction by surroundings"],
+      "usage": "Incorporate at least one 'grounding' mundane detail during high-stakes or epic scenes."
+    },
+    "subtext_layering": {
+      "dialogue": "Characters rarely say what they mean. Use silence, evasion, or specific 'Authorial Slang' (unique coinages) to imply depth.",
+      "pacing": "Slow down the 'mundane' to make it feel epic; speed up the 'epic' to make it feel visceral."
+    }
+  },
+  "specific_fingerprints": {
+    "mao_ni": "Subtle mockery, sophisticated internal voice, contrast between mundane desires and high destiny.",
+    "mai_bao": "Modern snark, detective logic, heavy emphasis on 'Show, Don't Tell' for power dynamics.",
+    "feng_huo": "Visceral visual metaphors, philosophical weight in small objects, rhythmic sentence structures.",
+    "wang_yu": "Logical caution, clear-eyed realism, avoidance of all flowery adjectives unless technically descriptive.",
+    "shi_ri_zhong_yan": "Spatial awareness, logic-puzzle tension, high-frequency focus on physiological survival responses."
+  }
+}
