@@ -174,12 +174,27 @@ class NovelAIDetector:
             ),
         ]
 
+        # -----------------------------
+        # 6) 刻板套路比喻 / 油腻微表情 / 滥用感官堆砌
+        # -----------------------------
+        self.cliche_rules: List[PatternRule] = [
+            PatternRule("面具化微表情", r"(?:干裂的嘴唇)?(?:扯|勾|拉)(?:出|起|出一个).*?的(?:不太明显|若有若无|冰冷)?的?(?:弧度|冷笑|笑意)", 3.0, "phrase_repeat", "hard"),
+            PatternRule("刻板感官堆砌", r"(?:铁锈般|劣质的).*?(?:腥甜|焚香|气味|味道)", 3.0, "ai_metaphor", "hard"),
+            PatternRule("做作力度词", r"死死(?:堵在|扣进|抠进|盯住|掐住|堵住)", 2.0, "phrase_repeat", "hard"),
+            PatternRule("刻板声音比喻", r"(?:像是在|如同)?砂纸上打磨过(?:的钝器)?", 3.0, "ai_metaphor", "hard"),
+            PatternRule("俗套濒死比喻", r"濒死的鱼", 3.0, "ai_metaphor", "hard"),
+            PatternRule("解释性连续暗喻", r"(?:那是在看|也是看|这分明是看)(?:一个|一只|一块).*?[，,。](?:一个|一只|一块|一条).*?", 3.0, "echo_parallel", "hard"),
+            PatternRule("物化修辞狂热", r"(?:犹如|宛如|就像|仿佛是一(?:只|个|头|块)).*?的(?:丹鼎|灵石|羔羊|布偶|宠物)", 3.0, "ai_metaphor", "hard"),
+            PatternRule("抽象极限宣称", r"(?:已经|甚至)?(?:超越|突破|打破)了[^。！？；\n]{1,10}(?:极限|界限|底线)", 3.0, "abstract_summary", "hard"),
+        ]
+
         self.all_rules: List[PatternRule] = (
             self.hard_phrase_rules
             + self.soft_phrase_rules
             + self.explain_rules
             + self.environment_rules
             + self.tail_tag_rules
+            + self.cliche_rules
         )
 
         # -----------------------------
@@ -421,6 +436,18 @@ class NovelAIDetector:
                 "将风、雨、灯、门、影子与人物动作绑定。",
                 "把纯气氛句改成‘门外有人/窗纸被掀/脚步停住’等具体信息。",
                 "避免连续两句纯环境。"
+            ]
+        elif hit.rule_name in {"面具化微表情", "刻板声音比喻", "做作力度词"}:
+            principle = "消除油腻的套路比喻，用克制的生理微操传递状态。"
+            suggestions = [
+                "删掉‘死死XX’‘扯出XX弧度’、‘砂纸打磨’。",
+                "直接写喉结滚动、眼皮牵扯、或者是物理层面的阻力本身。"
+            ]
+        elif hit.rule_name in {"刻板感官堆砌", "解释性连续暗喻", "物化修辞狂热", "俗套濒死比喻", "抽象极限宣称"}:
+            principle = "打破AI模仿人类修辞时的啰嗦堆砌与做作上位感。"
+            suggestions = [
+                "删去所有强行给角色贴物品标签的比喻（比如宛如丹鼎、铁锈般的腥甜）。",
+                "改换描写角度，用简单的一两个名词直击要害，而不是铺陈辞藻。"
             ]
         else:
             principle = "减少过渡缓冲，直接切入动作、冲突或对白。"

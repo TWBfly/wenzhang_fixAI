@@ -186,7 +186,7 @@ class LogicAuditor:
         self.book_id = book_id
         self.load_ledger()
 
-    def extract_facts(self, chapter_name: str, text: str):
+    def extract_facts(self, chapter_name: str, text: str, characters: List[Dict[str, str]] = None):
         """Regex-based atomic fact extraction."""
         for item_key, pattern in self.item_patterns.items():
             # Match variations like "拿走了钱", "把钱拿走"
@@ -211,6 +211,46 @@ class LogicAuditor:
                     "P1",
                     [chapter_name]
                 ))
+
+        # Identity and Gender consistency Check
+        if characters:
+            paragraphs = text.split('\n')
+            for char_info in characters:
+                char_name = char_info["name"]
+                base_gender = char_info.get("gender", "U")
+                disguise = char_info.get("disguise", "none")
+                
+                if char_name in text and base_gender != "U":
+                    m_count, f_count = 0, 0
+                    for p in paragraphs:
+                        if char_name in p:
+                            m_count += p.count("他")
+                            f_count += p.count("她")
+                            
+                    total_pronouns = m_count + f_count
+                    if total_pronouns >= 3:
+                        # If known as male, but > 80% pronouns are "她"
+                        if base_gender == "M" and f_count > m_count * 4:
+                            if disguise == "男扮女装":
+                                pass # Disguise is active, ignore
+                            else:
+                                self.conflicts.append(LogicConflict(
+                                    "GENDER_CONFLICT",
+                                    f"人物性别错乱 / 伪装漏洞：角色 '{char_name}' 原设定为男性(用'他')，但在本章大量使用'她' (可能存在性别遗忘或未交代的男扮女装)。",
+                                    "P0",
+                                    [chapter_name]
+                                ))
+                        # If known as female, but > 80% pronouns are "他"
+                        elif base_gender == "F" and m_count > f_count * 4:
+                            if disguise == "女扮男装":
+                                pass # Disguise is active, ignore
+                            else:
+                                self.conflicts.append(LogicConflict(
+                                    "GENDER_CONFLICT",
+                                    f"人物性别错乱 / 伪装漏洞：角色 '{char_name}' 原设定为女性(用'她')，但在本章大量使用'他' (可能存在性别遗忘或未交代的女扮男装)。",
+                                    "P0",
+                                    [chapter_name]
+                                ))
 
         # Character Knowledge Tracking (Simple)
         # If a character speaks about a secret item not yet encountered, flag KNOWLEDGE_GAP.
@@ -490,9 +530,36 @@ class EntityTracker:
         new_chars = [c for c in set(matches) if c not in stop_names and len(c) >= 2]
         
         updated = {c["name"]: c for c in existing}
+        
+        paragraphs = text.split('\n')
+        
         for name in new_chars:
             if name not in updated:
-                updated[name] = {"name": name, "role": "detected", "desc": "自动识别角色"}
+                updated[name] = {"name": name, "role": "detected", "desc": "自动识别角色", "gender": "U", "disguise": "none"}
+                
+        for char_name, char_info in updated.items():
+            if char_name in text:
+                has_f_to_m = ("女扮男装" in text and char_name in text) or (f"{char_name}女扮男装" in text)
+                has_m_to_f = ("男扮女装" in text and char_name in text) or (f"{char_name}男扮女装" in text)
+                
+                if has_f_to_m:
+                    char_info["disguise"] = "女扮男装"
+                    char_info["gender"] = "F"
+                elif has_m_to_f:
+                    char_info["disguise"] = "男扮女装"
+                    char_info["gender"] = "M"
+                    
+                m_count, f_count = 0, 0
+                for p in paragraphs:
+                    if char_name in p:
+                        m_count += p.count("他")
+                        f_count += p.count("她")
+                        
+                if char_info.get("gender", "U") == "U":
+                    if m_count > f_count * 2 and m_count >= 2:
+                        char_info["gender"] = "M"
+                    elif f_count > m_count * 2 and f_count >= 2:
+                        char_info["gender"] = "F"
         
         return list(updated.values())
 
@@ -613,6 +680,15 @@ class EnhancedNovelAISurgery:
             PatternRule("烂俗动物比喻", r"(?:缩成|像|如同|仿佛)[^。！？；\n]{0,5}(?:一只|一头)(?:受惊的|受伤的|暴怒的|陷入绝境的)(?:虾米|兔子|野兽|小鹿|幼兽|母狼|刺猬|羔羊)", 2.8, "ai_metaphor", "P1", 1),
             PatternRule("过度发力的副词模板", r"(?:猛地|狠狠(?:地)?|死死(?:地)?)(?:撞在|砸向|缩|咬住|盯)", 2.0, "phrase_repeat", "P1", 1),
             
+            # --- V10 新增：刻板修辞与油腻微表情 (针对第四批顽固AI味) ---
+            PatternRule("面具化微表情", r"(?:干裂的嘴唇)?(?:扯|勾|拉)(?:出|起|出一个).*?的(?:不太明显|若有若无|冰冷)?的?(?:弧度|冷笑|笑意)", 3.0, "phrase_repeat", "P1", 1),
+            PatternRule("刻板感官堆砌", r"(?:铁锈般|劣质的).*?(?:腥甜|焚香|气味|味道)", 3.0, "ai_metaphor", "P1", 1),
+            PatternRule("做作力度词", r"死死(?:堵在|扣进|抠进|盯住|掐住|堵住)", 2.0, "phrase_repeat", "P1", 1),
+            PatternRule("刻板声音比喻", r"(?:像是在|如同)?砂纸上打磨过(?:的钝器)?", 3.0, "ai_metaphor", "P1", 1),
+            PatternRule("俗套濒死比喻", r"濒死的鱼", 3.0, "ai_metaphor", "P1", 1),
+            PatternRule("解释性连续暗喻", r"(?:那是在看|也是看|这分明是看)(?:一个|一只|一块).*?[，,。](?:一个|一只|一块|一条).*?", 3.0, "echo_parallel", "P1", 1),
+            PatternRule("物化修辞狂热", r"(?:犹如|宛如|就像|仿佛是一(?:只|个|头|块)).*?的(?:丹鼎|灵石|羔羊|布偶|宠物)", 3.0, "ai_metaphor", "P1", 1),
+            
             # --- V9 新增：解释性尾注 (Explanatory Tail Tag) ---
             # AI最隐蔽的指纹：前半句具体生理/动作描写 + 破折号/逗号 + 「那是/这是」 + 抽象概念标签
             # 病灶: 替读者解码情感，破坏文学张力
@@ -720,6 +796,14 @@ class EnhancedNovelAISurgery:
             "某种抽象尾注": ["(删除'某种/一种…的力量/感觉'等抽象归因)", ""],
             "生理反应解释尾注": ["(生理反应本身就是最好的表达，不需要贴标签)", ""],
             "动作概括尾注": ["(动作描写已经到位，删掉概括性解释)", ""],
+            # V10: 刻板修辞与油腻微表情
+            "面具化微表情": ["(去掉模板化的弧度描写，用具体的眼部或面部肌肉动作代替)"],
+            "刻板感官堆砌": ["(删掉铁锈、劣质等套路比喻，描写更写实的、不过分浮夸的生理体征)"],
+            "做作力度词": ["(删掉‘死死’，用冷峻直接的动作传递力量)"],
+            "刻板声音比喻": ["(去掉砂纸、钝器等老套比喻，用声音发紧、喉咙干涩等生理反应代替)"],
+            "俗套濒死比喻": ["(删掉老套的濒死的鱼比喻，描写呼吸本身的急促起伏)"],
+            "解释性连续暗喻": ["(删掉这种做作的、长串的上帝视角比喻，直接干脆地描写对方眼神中的情绪)"],
+            "物化修辞狂热": ["(去掉强行将人比作丹鼎、灵石等物品的油腻上位压迫感写法)"],
         }
 
 
@@ -1373,7 +1457,7 @@ class EnhancedNovelAISurgery:
                     context.background += f" | 风格对标: {context.genre} (感官目标: {benchmark['sensory']})"
 
             # Re-run full analysis to get structure issues
-            final_report = self.analyze_chapter(chapter_name, rev_text)
+            final_report = self.analyze_chapter(chapter_name, rev_text, context)
             structure_issues = final_report.get("structure_issues", [])
             task_path = self.agent_task_gen.generate_task(chapter_name, rev_text, context, changes, structure_issues=structure_issues)
 
@@ -1426,8 +1510,9 @@ class EnhancedNovelAISurgery:
             logic_summary=self.logic_auditor.conflicts
         )
 
-    def analyze_chapter(self, chapter_name: str, chapter_text: str) -> Dict[str, object]:
-        self.logic_auditor.extract_facts(chapter_name, chapter_text)
+    def analyze_chapter(self, chapter_name: str, chapter_text: str, context: Optional[NovelContext] = None) -> Dict[str, object]:
+        chars = context.characters if context else None
+        self.logic_auditor.extract_facts(chapter_name, chapter_text, chars)
         
         paragraphs = self.split_paragraphs(chapter_text)
         paragraph_infos = []
@@ -1505,8 +1590,8 @@ class EnhancedNovelAISurgery:
             "structure_issues": structure_issues
         }
 
-    def analyze_book(self, chapters: Sequence[Tuple[str, str]]) -> Dict[str, object]:
-        reports = [self.analyze_chapter(n, t) for n, t in chapters]
+    def analyze_book(self, chapters: Sequence[Tuple[str, str]], context: Optional[NovelContext] = None) -> Dict[str, object]:
+        reports = [self.analyze_chapter(n, t, context) for n, t in chapters]
         ai_s = round(sum(r["ai_score"] for r in reports) / max(len(reports), 1), 2)
         g_rules, g_issues = Counter(), Counter()
         for r in reports:

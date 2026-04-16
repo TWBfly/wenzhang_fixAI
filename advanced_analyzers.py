@@ -194,6 +194,35 @@ class ShowDontTellTransformer:
         return list(set(hits))
 
 
+
+class ClicheExpressDetector:
+    """检测并拦截AI高频套路词、油腻微表情及刻板的感官堆砌"""
+    
+    CLICHE_PATTERNS = [
+        (r"(?:扯|勾|拉)[出起一个]+.*?的(?:不太明显|若有若无|冰冷)?(?:弧度|冷笑|笑意)", "面具化微表情：‘扯出一个不太明显的弧度’是极经典的AI描写，建议用具体的眼部或面部动作代替。"),
+        (r"(?:铁锈般|劣质的).*?(?:腥甜|焚香|气味)", "刻板感官堆砌：‘铁锈般的腥甜’、‘劣质的焚香’是AI滥用的味觉比喻，显得廉价油腻，应改换角度。"),
+        (r"死死(?:堵在|扣进|抠进|盯住|掐住)", "做作力度词：‘死死XX’在AI文中泛滥，显得浮夸。"),
+        (r"(?:像是在|如同)?砂纸上打磨过(?:的钝器)?", "刻板声音比喻：‘砂纸打磨的钝器’常用于AI描写沙哑声音，极其烂俗。"),
+        (r"濒死的鱼", "俗套比喻：‘像濒死的鱼一样喘气’是AI高度重复修辞。"),
+        (r"(?:那是在看|也是看|这分明是看)(?:一个|一只|一块).*?[，,。](?:一个|一只|一块|一条).*?", "解释性连续暗喻：强行并列的物品暗喻，是AI试图模仿文学感时的翻车现象，啰嗦且做作。"),
+        (r"(?:犹如|宛如|就像|仿佛是一只).*?的(?:丹鼎|灵石|羔羊|布偶|宠物)", "修辞狂热：过度强调被看者的‘物品’属性，是AI滥用的上位压迫感写法。")
+    ]
+    
+    def __init__(self):
+        self.compiled_patterns = [(re.compile(p), reason) for p, reason in self.CLICHE_PATTERNS]
+    
+    def check(self, text: str) -> List[Dict]:
+        issues = []
+        for p, reason in self.compiled_patterns:
+            m = p.search(text)
+            if m:
+                issues.append({
+                    "hit": m.group(0),
+                    "reason": reason
+                })
+        return issues
+
+
 class IdentitySummaryDetector:
     """检测在具体描写段落结尾，像旁白一样跳出来给角色下定义的AI通病
     
