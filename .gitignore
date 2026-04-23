@@ -8,5 +8,10 @@ __pycache__/
 scratch/
 output_test/
 output_sqlite_test/
-db/*.sqlite
-logic_ledger.json.bak
+db/
+archive/
+work/
+duanpian_zhengwen/
+agent_tasks/
+logic_ledger.json
+*.bak

@@ -340,15 +340,22 @@ class ExplanatoryTailTagDetector:
         
         # 按句号/感叹号/问号切分
         sentences = re.split(r'(?<=[。！？])', text)
+        sentences = [s.strip() for s in sentences if s.strip()]
         
-        for sentence in sentences:
-            sentence = sentence.strip()
+        for i, sentence in enumerate(sentences):
             if not sentence or len(sentence) < 8:
                 continue
             
+            # 单句内检测
             result = self._analyze_sentence(sentence)
             if result:
                 issues.append(result)
+            
+            # P1 Fix #5: 跨句检测 — 上一句有具体描写，当前句贴标签
+            if i > 0 and len(sentences[i-1]) >= 8:
+                cross_result = self._analyze_cross_sentence(sentences[i-1], sentence)
+                if cross_result:
+                    issues.append(cross_result)
         
         return issues
     
@@ -397,3 +404,151 @@ class ExplanatoryTailTagDetector:
             front += "。"
         return front
 
+    def _analyze_cross_sentence(self, prev: str, curr: str) -> Optional[Dict]:
+        """分析跨句解释性尾注结构。"""
+        connector_pattern = re.compile(r"^[，,]*?(那是|这是|那不是|这不是|那便是|这便是|那都是|这都是|那种|这种)")
+        connector_match = connector_pattern.search(curr)
+        if not connector_match:
+            return None
+            
+        has_anchor = any(anchor in prev for anchor in self._anchor_set)
+        if not has_anchor:
+            return None
+            
+        has_abstract = any(tag in curr for tag in self._abstract_set)
+        if not has_abstract:
+            return None
+            
+        matched_anchors = [a for a in self._anchor_set if a in prev]
+        matched_tags = [t for t in self._abstract_set if t in curr]
+        
+        return {
+            "hit": f"{prev} {curr}",
+            "reason": f"跨句解释性尾注：上一句已有具体描写（{'/'.join(matched_anchors[:3])}），"
+                      f"当前句却贴了抽象标签（{'/'.join(matched_tags[:3])}）。应直接砍掉当前句。",
+            "front": prev,
+            "tail": curr,
+            "severity": "P1",
+            "matched_anchors": matched_anchors,
+            "matched_tags": matched_tags,
+        }
+
+
+class PrologueHookAnalyzer:
+    """楔子开篇钩子检测器"""
+    HOOK_TYPES = ["conflict_hook", "mystery_hook", "sensory_hook", "dialogue_hook"]
+    
+    def analyze_opening(self, first_500_chars: str) -> Dict:
+        """
+        分析楔子/序章开头 500 字是否包含有效的留人钩子。
+        返回: {'has_hook': bool, 'hook_types': list, 'issues': List[str]}
+        """
+        issues = []
+        hook_types = []
+        
+        # 1. 对话钩子
+        if re.search(r'^["\u201c\u300c].+?["\u201d\u300d]', first_500_chars.strip()[:100]):
+            hook_types.append("dialogue_hook")
+            
+        # 2. 冲突动词钩子
+        conflict_verbs = r'杀|逃|撞|烧|火|血|毒|死|砸|劈|爆炸|尖叫|断裂'
+        if re.search(conflict_verbs, first_500_chars[:100]):
+            hook_types.append("conflict_hook")
+            
+        # 3. 悬念标志
+        mystery_markers = r'不知道|为什么|突然|没想过|来不及|不对劲|反常|秘密|诡异|尸体'
+        if re.search(mystery_markers, first_500_chars[:150]):
+            hook_types.append("mystery_hook")
+            
+        # 4. 环境开场警告
+        cliche_env = r'夜色沉沉|月光如水|夜黑风高|清晨的阳光|微风拂过|这是一个|很久很久以前'
+        if re.search(cliche_env, first_500_chars[:100]):
+            issues.append("开篇包含套路化的宏大/平静环境描写，可能削弱开局张力，建议改为具体人物冲突或极细微的感官锚点。")
+            
+        if not hook_types and not issues:
+            issues.append("开篇前 150 字未检测到明显的留人钩子（冲突/对话/悬念），建议加速进入主线或制造直接矛盾。")
+            
+        return {
+            "has_hook": len(hook_types) > 0,
+            "hook_types": hook_types,
+            "issues": issues
+        }
+
+
+class CharacterVoiceDifferentiator:
+    """角色声轨分离器：检测角色对白是否千人一面"""
+    def __init__(self):
+        from collections import defaultdict
+        self._defaultdict = defaultdict
+
+    def analyze_voices(self, text: str, characters: List[Dict[str, str]]) -> List[Dict]:
+        issues = []
+        char_names = [c["name"] for c in characters]
+        if not char_names:
+            return issues
+            
+        dialogue_pattern = re.compile(r'([^\n。！？]+)(?:道|说|问|开口|低声).*?["\u201c]([^"\u201d]+)["\u201d]')
+        char_dialogues = self._defaultdict(list)
+        
+        for match in dialogue_pattern.finditer(text):
+            narrative = match.group(1)
+            quote = match.group(2)
+            speaker = "Unknown"
+            for name in char_names:
+                if name in narrative:
+                    speaker = name
+                    break
+            if speaker != "Unknown":
+                char_dialogues[speaker].append(quote)
+                
+        # 同质化检测
+        if len(char_dialogues) >= 2:
+            avg_lengths = {s: sum(len(q) for q in qs)/len(qs) for s, qs in char_dialogues.items()}
+            lengths = list(avg_lengths.values())
+            if max(lengths) > 0 and (max(lengths) - min(lengths)) / max(lengths) < 0.15:
+                issues.append({
+                    "reason": "角色声轨同质化警报：不同角色的台词平均长度和结构过于相似（千人一面），缺乏个性化口吻。建议按身份重写部分对白。",
+                    "details": avg_lengths
+                })
+        return issues
+
+
+class MicroImperfectionGenerator:
+    """微瑕疵模拟器：随机寻找完全无瑕疵的段落并建议植入烟火气锚点"""
+    def __init__(self):
+        self.anchor_pool = [
+            "桌角剥落的红漆", "鞋底黏着的一块碎石子", "袖口脱出的一截线头", 
+            "空气中细小的浮尘", "门缝里漏进来的一丝冷风", "指甲缝里的泥垢",
+            "椅腿摩擦地面的刺耳声", "衣襟上沾的一点油渍", "头发丝上的汗珠",
+            "牙齿咬合时的酸涩", "鞋帮子蹭破的一块皮"
+        ]
+        # P3 Fix #17: 扩展生活锚点判断词库
+        self.grounding_nouns = {
+            "桌", "椅", "墙", "地", "灰", "风", "杯", "血",
+            "土", "泥", "汗", "尘", "碗", "盘", "锅", "碎",
+            "线头", "油渍", "裂缝", "指甲", "鞋", "袖", "衣角",
+            "蜡", "烛", "炭", "灰烬", "木屑", "铁锈", "绳",
+            "石子", "沙砾", "草叶", "树皮", "虫", "鼠", "蛛网",
+        }
+        # 非视觉感官词（用于综合判断段落是否有烟火气）
+        self.sensory_words = {
+            "闻到", "嗅", "腥", "臭", "香", "潮", "湿", "干", "冰",
+            "烫", "凉", "热", "冷", "痒", "痛", "麻", "酸", "涩",
+            "苦", "甜", "咸", "辣", "粗糙", "光滑", "黏", "嘎吱",
+        }
+
+    def check(self, paragraphs: List[str]) -> List[Dict]:
+        issues = []
+        for idx, p in enumerate(paragraphs):
+            if len(p) > 100:
+                has_grounding = any(noun in p for noun in self.grounding_nouns)
+                has_sensory = any(word in p for word in self.sensory_words)
+                if not has_grounding and not has_sensory:
+                    suggestion = random.choice(self.anchor_pool)
+                    issues.append({
+                        "para_idx": idx,
+                        "hit": p[:20] + "...",
+                        "reason": f"过度平滑警报：该段落缺乏现实生活锚点和非视觉感官，显得像悬浮的AI旁白。建议在动作间隙随机植入微瑕疵，如：'{suggestion}'。"
+                    })
+                    break  # 每章最多建议一个
+        return issues

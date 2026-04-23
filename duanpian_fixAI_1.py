@@ -12,7 +12,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple, Any
 import logging
-from advanced_analyzers import RhythmShatter, SensoryWeaver, RedundancyDetector, POVChecker, DialoguePowerAnalyzer, ShowDontTellTransformer, ExplanatoryTailTagDetector
+import sys
+import os
+from advanced_analyzers import RhythmShatter, SensoryWeaver, RedundancyDetector, POVChecker, DialoguePowerAnalyzer, ShowDontTellTransformer, ExplanatoryTailTagDetector, CharacterVoiceDifferentiator, MicroImperfectionGenerator, PrologueHookAnalyzer, IdentitySummaryDetector, ClicheExpressDetector
 import traceback
 
 # Configure logging
@@ -140,6 +142,69 @@ class BookReport:
     logic_summary: List[LogicConflict] = field(default_factory=list)
 
 
+API_DUANPIAN_PATH = Path(__file__).parent.parent / "API_duanpian"
+if str(API_DUANPIAN_PATH) not in sys.path:
+    sys.path.append(str(API_DUANPIAN_PATH))
+
+try:
+    from llm_client import generate_text_safe
+except ImportError:
+    logging.warning("未能导入 API_duanpian.llm_client，LLM 增强功能将被降级。")
+    def generate_text_safe(prompt, system_prompt="", model="gemma-4-31b-it", **kwargs):
+        return None
+
+def extract_json_from_llm(text: str) -> Optional[Any]:
+    """从 LLM 响应中安全提取 JSON，支持多层嵌套。"""
+    if not text:
+        return None
+    text = text.strip()
+    # 去除 markdown 代码块标记
+    text = re.sub(r'^```(?:json)?\s*', '', text)
+    text = re.sub(r'\s*```$', '', text)
+    text = text.strip()
+    for start_char, end_char in [('{', '}'), ('[', ']')]:
+        start = text.find(start_char)
+        if start == -1:
+            continue
+        depth = 0
+        in_string = False
+        escape_next = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if escape_next:
+                escape_next = False
+                continue
+            if ch == '\\':
+                escape_next = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == start_char:
+                depth += 1
+            elif ch == end_char:
+                depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[start:i+1])
+                except json.JSONDecodeError:
+                    break
+    return None
+
+
+def call_llm_with_fallback(prompt: str, system_prompt: str) -> Optional[str]:
+    # 优先尝试 gemma-4-31b-it
+    res = generate_text_safe(prompt, system_prompt=system_prompt, model="gemma-4-31b-it")
+    if res:
+        return res
+    # fallback
+    logging.info("gemma-4-31b-it 失败，尝试 fallback 到 deepseek-reasoner")
+    res = generate_text_safe(prompt, system_prompt=system_prompt, model="deepseek-reasoner")
+    return res
+
+
 class LogicAuditor:
     """Atomic Logic & Causal Alignment (ALCA) engine with SQLite persistence."""
     def __init__(self, db_path: Path):
@@ -181,13 +246,57 @@ class LogicAuditor:
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_book_id ON logic_facts(book_id)")
+            
+            # --- V11 New Graph Tables ---
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS entities (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    book_id TEXT,
+                    chapter_name TEXT,
+                    entity_type TEXT,
+                    entity_name TEXT,
+                    details TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS character_knowledge_ledger (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    book_id TEXT,
+                    chapter_name TEXT,
+                    character_name TEXT,
+                    knowledge_topic TEXT,
+                    status TEXT,
+                    context TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS item_trajectory (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    book_id TEXT,
+                    chapter_name TEXT,
+                    item_name TEXT,
+                    current_owner TEXT,
+                    status TEXT,
+                    context TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS foreshadowing_ledger (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    book_id TEXT,
+                    setup_chapter TEXT,
+                    payoff_chapter TEXT,
+                    clue TEXT,
+                    status TEXT
+                )
+            """)
 
     def set_book_context(self, book_id: str):
         self.book_id = book_id
         self.load_ledger()
 
     def extract_facts(self, chapter_name: str, text: str, characters: List[Dict[str, str]] = None):
-        """Regex-based atomic fact extraction."""
+        """Regex and LLM-based structured fact extraction."""
         for item_key, pattern in self.item_patterns.items():
             # Match variations like "拿走了钱", "把钱拿走"
             if re.search(rf"(?:拿走|夺走|抢走|没收|毁掉|扔掉).*?({pattern})|把.*?({pattern}).*?(?:拿走|夺走|抢走|没收|毁掉|扔掉)", text):
@@ -199,9 +308,41 @@ class LogicAuditor:
         if "车" in text and ("山路" in text or "公路" in text):
             self.ledger.append(LogicFact(chapter_name, "CHAR_LOC", "PROTAG", "in_vehicle", "在车上行驶"))
 
+        # --- V11 LLM Causal Extraction (同步版，修复线程安全问题) ---
+        if len(text) > 100:
+            try:
+                prompt = f"请提取本章的关键因果事实，输出严格的JSON格式。包含以下字段：\n" \
+                         f"1. new_entities: [{{'type': '人物/道具/地点/秘密', 'name': '实体名', 'details': '描述'}}]\n" \
+                         f"2. foreshadowing: [{{'clue': '埋下的伏笔描述', 'status': 'unresolved'}}]\n" \
+                         f"3. resolved_foreshadowing: [{{'clue': '回收了之前的哪个伏笔'}}]\n" \
+                         f"4. knowledge_updates: [{{'character': '角色名', 'topic': '知道的信息', 'status': 'known', 'context': '如何知道的'}}]\n" \
+                         f"正文：\n{text[:3000]}"
+                sys_prompt = "你是一个强大的逻辑图谱抽取引擎，只输出纯JSON，不要任何markdown标记和思考过程。"
+                
+                res = call_llm_with_fallback(prompt, sys_prompt)
+                if res:
+                    data = extract_json_from_llm(res)
+                    if data is None:
+                        raise ValueError("无法从LLM响应中提取JSON结构")
+                    
+                    with sqlite3.connect(self.db_path, timeout=15.0) as conn:
+                        for ent in data.get('new_entities', []):
+                            conn.execute("INSERT INTO entities (book_id, chapter_name, entity_type, entity_name, details) VALUES (?, ?, ?, ?, ?)",
+                                         (self.book_id, chapter_name, ent.get('type',''), ent.get('name',''), ent.get('details','')))
+                        for f in data.get('foreshadowing', []):
+                            conn.execute("INSERT INTO foreshadowing_ledger (book_id, setup_chapter, payoff_chapter, clue, status) VALUES (?, ?, ?, ?, ?)",
+                                         (self.book_id, chapter_name, "", f.get('clue',''), f.get('status','unresolved')))
+                        for f in data.get('resolved_foreshadowing', []):
+                            conn.execute("UPDATE foreshadowing_ledger SET status='resolved', payoff_chapter=? WHERE clue LIKE ? AND book_id=?",
+                                         (chapter_name, f"%{f.get('clue', '')}%", self.book_id))
+                        for ku in data.get('knowledge_updates', []):
+                            conn.execute("INSERT INTO character_knowledge_ledger (book_id, chapter_name, character_name, knowledge_topic, status, context) VALUES (?, ?, ?, ?, ?, ?)",
+                                         (self.book_id, chapter_name, ku.get('character',''), ku.get('topic',''), ku.get('status',''), ku.get('context','')))
+            except Exception as e:
+                logger.error(f"LLM 因果抽取失败: {e}")
+
         # Information Asymmetry detection
-        # Logic: If text describes character's inner state of a hidden secret NOT yet revealed, track it.
-        # If narrator explains something that NO character in scene could know, flag OMNISCIENCE_LEAK.
+        # Logic: If narrator explains something that NO character in scene could know, flag OMNISCIENCE_LEAK.
         omniscient_markers = [r"由于他不知道", r"他并不知道", r"在这个世界上没有人知道", r"正如他预料的一样", r"事实上"]
         for p in omniscient_markers:
             if re.search(p, text):
@@ -229,32 +370,22 @@ class LogicAuditor:
                             
                     total_pronouns = m_count + f_count
                     if total_pronouns >= 3:
-                        # If known as male, but > 80% pronouns are "她"
                         if base_gender == "M" and f_count > m_count * 4:
-                            if disguise == "男扮女装":
-                                pass # Disguise is active, ignore
-                            else:
+                            if disguise != "男扮女装":
                                 self.conflicts.append(LogicConflict(
                                     "GENDER_CONFLICT",
                                     f"人物性别错乱 / 伪装漏洞：角色 '{char_name}' 原设定为男性(用'他')，但在本章大量使用'她' (可能存在性别遗忘或未交代的男扮女装)。",
                                     "P0",
                                     [chapter_name]
                                 ))
-                        # If known as female, but > 80% pronouns are "他"
                         elif base_gender == "F" and m_count > f_count * 4:
-                            if disguise == "女扮男装":
-                                pass # Disguise is active, ignore
-                            else:
+                            if disguise != "女扮男装":
                                 self.conflicts.append(LogicConflict(
                                     "GENDER_CONFLICT",
                                     f"人物性别错乱 / 伪装漏洞：角色 '{char_name}' 原设定为女性(用'她')，但在本章大量使用'他' (可能存在性别遗忘或未交代的女扮男装)。",
                                     "P0",
                                     [chapter_name]
                                 ))
-
-        # Character Knowledge Tracking (Simple)
-        # If a character speaks about a secret item not yet encountered, flag KNOWLEDGE_GAP.
-        # (This is a simplified programmatic version of the cognitive engine)
 
     def _check_item_conflict(self, chapter: str, item: str, new_status: str):
         last_status = None
@@ -297,7 +428,16 @@ class LogicAuditor:
                 self.ledger.append(LogicFact(*row))
 
     def audit_continuity(self, chapters_data: List[Tuple[str, str]]):
-        pass
+        """Cross-chapter logic audit."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("SELECT setup_chapter, clue FROM foreshadowing_ledger WHERE status='unresolved' AND book_id=?", (self.book_id,))
+            for row in cursor:
+                self.conflicts.append(LogicConflict(
+                    "UNRESOLVED_FORESHADOWING",
+                    f"伏笔未回收：在 {row[0]} 埋下的伏笔 '{row[1]}' 直到大结局仍未解决。",
+                    "P1",
+                    [row[0], "大结局"]
+                ))
 
 
 class EvolutionEngine:
@@ -340,27 +480,85 @@ class EvolutionEngine:
 
     def load_knowledge(self):
         self.knowledge = {"rules": [], "patterns": {}}
+        # P0 Fix: 清除之前注入的进化规则，防止重复追加导致规则膨胀
+        if hasattr(self, '_injected_rule_names'):
+            self.main_system.tier1_rules = [r for r in self.main_system.tier1_rules if r.name not in self._injected_rule_names]
+            self.main_system.all_rules = [r for r in self.main_system.all_rules if r.name not in self._injected_rule_names]
+        self._injected_rule_names = set()
+        
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("SELECT name, pattern, weight, category, severity, frequency FROM evolution_rules")
             for row in cursor:
-                # Dynamic weight adjustment based on frequency
-                # The more a rule is triggered (and corrected by human), the higher its weight
                 base_weight = row[2]
                 freq = row[5]
-                dynamic_weight = base_weight * (1.0 + (freq - 1) * 0.5) # +50% weight per recurrence
+                dynamic_weight = base_weight * (1.0 + (freq - 1) * 0.5)
                 
                 rule_dict = {
-                    "name": row[0], "pattern": row[1], "weight": dynamic_weight,
-                    "category": row[3], "severity": row[4]
+                    "name": row[0],
+                    "pattern": row[1],
+                    "weight": dynamic_weight,
+                    "category": row[3],
+                    "severity": row[4]
                 }
                 self.knowledge["rules"].append(rule_dict)
-                # Synergize with main system
+                self._injected_rule_names.add(row[0])
                 self.main_system.tier1_rules.append(PatternRule(**rule_dict))
                 self.main_system.all_rules.append(PatternRule(**rule_dict))
 
+    def set_book_bg(self, bg: str):
+        self.current_bg = bg
+
+    def get_book_bg(self) -> str:
+        return getattr(self, "current_bg", "Historical")
+
+    def mine_rules_with_llm(self, original_text: str, edited_text: str):
+        """Use LLM to reverse-engineer human edits and generate new Regex rules."""
+        if len(original_text) < 100 or len(edited_text) < 100:
+            return
+            
+        prompt = f"对比以下AI原稿和人类修改稿，提取出人类集中删除的'AI感俗套词汇或句式'。\n" \
+                 f"要求输出纯JSON格式：\n" \
+                 f"[{{'name': '规则短名', 'pattern': 'Python Regex 表达式(用于匹配被删掉的AI套话)', 'category': '类型', 'severity': 'P1/P2'}}]\n\n" \
+                 f"【原稿】\n{original_text[:1500]}\n\n" \
+                 f"【修改稿】\n{edited_text[:1500]}"
+        sys_prompt = "你是一个反向工程规则挖掘器，仅输出严格的JSON列表，不要markdown。"
+        
+        res = call_llm_with_fallback(prompt, sys_prompt)
+        if res:
+            try:
+                rules = extract_json_from_llm(res)
+                if rules is None:
+                    raise ValueError("无法从LLM响应中提取JSON结构")
+                if isinstance(rules, dict):
+                    rules = [rules]
+                for r in rules:
+                    # 简单的沙盒验证：确保 pattern 能编译且不会匹配过于简单的字词
+                    try:
+                        pattern_str = r.get('pattern', '')
+                        compiled = re.compile(pattern_str)
+                        if len(pattern_str) > 3:
+                            # 沙盒测试：如果在样本上匹配超过 5% 的长度，视为过泛规则并拒绝
+                            matches = list(re.finditer(compiled, original_text[:1500]))
+                            total_match_len = sum(len(m.group(0)) for m in matches)
+                            if total_match_len > min(1500, len(original_text)) * 0.05:
+                                logger.warning(f"沙盒拦截: 规则 '{r.get('name')}' ({pattern_str}) 匹配过多文本，可能引起暴走，已拒绝。")
+                                continue
+                                
+                            self.add_evolution_rule(
+                                r.get('name', 'llm_rule'), 
+                                pattern_str, 
+                                2.0, 
+                                r.get('category', 'llm_mined'), 
+                                r.get('severity', 'P1')
+                            )
+                    except re.error:
+                        continue
+            except Exception as e:
+                logger.error(f"LLM 规则挖掘失败: {e}")
+
     def learn_from_pair(self, original_text: str, edited_text: str):
         """Analyze diff and extract improvements."""
-        # Detect patterns that were in original but removed/changed in edited
+        # 1. 经典硬编码规则验证
         patterns_to_check = [
             ("显然", r"显然", 2.0, "narration_overuse"),
             ("意味着", r"意味着", 2.0, "narration_overuse"),
@@ -377,18 +575,46 @@ class EvolutionEngine:
             
             if count_ori > count_edt:
                 self.add_evolution_rule(name, pattern, weight, cat, "P1")
+                
+        # 2. V11 接入 LLM 盲区学习
+        self.mine_rules_with_llm(original_text, edited_text)
+
+    def decay_rules(self):
+        """Decrease rule weights over time if they are not triggered."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("UPDATE evolution_rules SET frequency = frequency - 1 WHERE frequency > 1")
 
     def batch_learn_from_human_samples(self, directory: Path):
-        """Walk through duanpian_zhengwen/X/ folders and learn from Original vs Human pairs."""
-        print(f"🧬 启动人类经验学习流程: {directory}")
-        for folder in directory.glob("*"):
-            if folder.is_dir():
-                ori_p = folder / "原文.md"
-                hum_p = folder / "人工修改之后.md"
-                if ori_p.exists() and hum_p.exists():
-                    print(f"  - 学习样本: {folder.name}")
-                    self.learn_from_pair(ori_p.read_text(encoding='utf-8', errors='ignore'), 
-                                       hum_p.read_text(encoding='utf-8', errors='ignore'))
+        """Walk through samples and learn from Original vs Human pairs or High Quality originals."""
+        print(f"🧬 启动文学范式学习流程: {directory}")
+        # 支持两种结构：
+        # 1. duanpian_zhengwen/X/ (原文 vs 人工修改之后)
+        # 2. fiveNovel/DATE/NOVEL_NAME/NOVEL_NAME.md (高质量原著)
+        
+        # 处理第一种：对改学习
+        for folder in directory.glob("*/"):
+            ori_p = folder / "原文.md"
+            hum_p = folder / "人工修改之后.md"
+            if ori_p.exists() and hum_p.exists():
+                print(f"  - 学习对改样本: {folder.name}")
+                self.learn_from_pair(ori_p.read_text(encoding='utf-8', errors='ignore'), 
+                                   hum_p.read_text(encoding='utf-8', errors='ignore'))
+        
+        # 处理第二种：原著学习 (fiveNovel 结构)
+        # 假设用户传入的是 PycharmProjects/pythonProject/fiveNovel
+        if "fiveNovel" in str(directory):
+            print(f"  - 扫描高质量原著库...")
+            # 查找所有 DATE 文件夹下的 NOVEL 文件夹下的 md
+            novel_files = list(directory.glob("**/*.md"))
+            for md_file in novel_files[:50]: # 限制前50本，防止撑爆
+                if md_file.stem in str(md_file.parent.name):
+                    print(f"    - 研读原著基因: {md_file.name}")
+                    # 对于原著，我们不仅挖掘规则，还建立风格基准
+                    stats = self.main_system.literary_researcher.analyze_novel(md_file)
+                    self.save_benchmark(md_file.stem, stats)
+                    # 也可以从中提取一些正向范式（待后续细化）
+        
+        self.decay_rules()
         self.load_knowledge()
 
     def add_evolution_rule(self, name: str, pattern: str, weight: float, category: str, severity: str):
@@ -405,13 +631,13 @@ class EvolutionEngine:
                     (name,)
                 )
 
-    def save_benchmark(self, label: str, stats: Dict[str, float]):
+    def save_benchmark(self, label: str, stats: Dict[str, object]):
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
                 INSERT OR REPLACE INTO style_benchmarks 
                 (label, sensory_index, rhythm_variance, action_tag_density, top_keywords)
                 VALUES (?, ?, ?, ?, ?)
-            """, (label, stats['sensory'], stats['variance'], stats['action_tag'], json.dumps(stats['keywords'])))
+            """, (label, stats.get('sensory',0), stats.get('variance',0), stats.get('action_density',0), json.dumps(stats.get('keywords',[]), ensure_ascii=False)))
 
     def load_benchmark(self, label: str) -> Optional[Dict]:
         with sqlite3.connect(self.db_path) as conn:
@@ -435,34 +661,43 @@ class LiteraryResearcher:
     def analyze_novel(self, path: Path, sample_limit=500000) -> Dict:
         content = path.read_text(encoding='utf-8', errors='ignore')[:sample_limit]
         words_count = len(content)
-        sentences = re.split(r'[。！？]', content)
+        sentences = re.split(r'[。！？\n]', content)
         lens = [len(s) for s in sentences if len(s) > 1]
         
-        # Sensory Index
+        # 1. Sensory Index
         hits = 0
         for s in self.sensory_lexicon:
             hits += content.count(s)
-        sensory_index = (hits / (words_count / 1000.0)) * 10
+        sensory_index = (hits / (words_count / 1000.0 + 1)) * 10
         
-        # Rhythm Variance
+        # 2. Rhythm Variance (文学呼吸感)
         if len(lens) > 1:
             mean = sum(lens) / len(lens)
             variance = (sum((x - mean)**2 for x in lens) / len(lens))**0.5
         else:
             variance = 0.0
 
-        # Action Tag Density in Dialogue
-        # Look for patterns like "说道，..." or "，说道" where action/desc follows
-        tags = len(re.findall(r'[“][^”]+[”][^。！？\n]*[，。]', content))
-        action_tag_density = (tags / (words_count / 1000.0))
+        # 3. Dialogue Dynamics (对白张力与烟火气)
+        # 统计含有“动作/神态描述”的对白比例
+        total_quotes = len(re.findall(r'[“][^”]+[”]', content))
+        action_quotes = len(re.findall(r'[“][^”]+[”][^。！？\n]*?[，。][^。！？\n]*?[\u4e00-\u9fff]{2,}', content))
+        dialogue_action_ratio = action_quotes / max(total_quotes, 1)
 
-        # Top Keywords (High specificity)
-        # Simplified: top chars or unique objects
+        # 4. Action Chain Density (动作链深度)
+        # 寻找连续出现的动词结构 (如：抬手一挥、翻身跃起)
+        action_chains = len(re.findall(r'[\u4e00-\u9fff]{1,2}(?:了|着|起|下|开|过)[\u4e00-\u9fff]{1,2}(?:了|着|起|下|开|过)?', content))
+        action_density = (action_chains / (words_count / 1000.0 + 1))
+
+        # 5. Vocabulary DNA (高频特征词)
+        words = re.findall(r'[\u4e00-\u9fff]{2,4}', content)
+        common_words = [w for w, c in Counter(words).most_common(50) if len(w) >= 2]
+
         return {
             "sensory": round(sensory_index, 3),
             "variance": round(variance, 3),
-            "action_tag": round(action_tag_density, 3),
-            "keywords": [] # Placeholder for future POS tagging
+            "dialogue_action_ratio": round(dialogue_action_ratio, 3),
+            "action_density": round(action_density, 3),
+            "keywords": common_words
         }
 
 
@@ -578,6 +813,8 @@ class AgentRefinementTask:
         # Build precise diagnostic micro-instructions
         instructions = []
         instructions.append(f"# 精准改写任务: {chapter_name}")
+        instructions.append(f"> **目标执行者**: IDE 内置大模型助手 (Antigravity)")
+        instructions.append(f"> **指令**: 读取本任务单中的诊断，直接对下方的【参考全文内容】进行整体或局部改写。重写完毕后，请使用代码编辑工具将结果写回原文件。\n")
         instructions.append(f"频道: {context.genre} | 背景: {context.background}")
         instructions.append(f"出场角色: {char_str}\n")
         
@@ -640,6 +877,11 @@ class EnhancedNovelAISurgery:
         self.dialogue_analyzer = DialoguePowerAnalyzer()
         self.sdt_transformer = ShowDontTellTransformer()
         self.tail_tag_detector = ExplanatoryTailTagDetector()
+        self.voice_differentiator = CharacterVoiceDifferentiator()
+        self.micro_imperfection = MicroImperfectionGenerator()
+        self.identity_summary_detector = IdentitySummaryDetector()
+        self.cliche_express_detector = ClicheExpressDetector()
+        self.prologue_hook = PrologueHookAnalyzer()
         # -----------------------------
         # Tier 1: Always replace (高频 AI 味 / 模板感极强)
         # -----------------------------
@@ -685,6 +927,17 @@ class EnhancedNovelAISurgery:
             PatternRule("刻板感官堆砌", r"(?:铁锈般|劣质的).*?(?:腥甜|焚香|气味|味道)", 3.0, "ai_metaphor", "P1", 1),
             PatternRule("做作力度词", r"死死(?:堵在|扣进|抠进|盯住|掐住|堵住)", 2.0, "phrase_repeat", "P1", 1),
             PatternRule("刻板声音比喻", r"(?:像是在|如同)?砂纸上打磨过(?:的钝器)?", 3.0, "ai_metaphor", "P1", 1),
+
+            # --- V12 新增：结构性排比、说教与过度总结 (针对高智感但模式化的 AI 味) ---
+            PatternRule("取而代之滥用", r"(?:消失了|没有了|换下了)[^。！？；\n]{0,10}[，,]取而代之的(?:是)?", 2.8, "phrase_repeat", "P1", 1),
+            PatternRule("强行否定与强调", r"(?:那|这)不是[^。！？；\n]{1,15}[，,。](?:而)?是[^。！？；\n]{2,30}", 3.0, "syntax_repeat", "P1", 1),
+            PatternRule("连珠炮式否定", r"(?:这|那)不是[^。！？；\n]{2,10}。[这|那]不是[^。！？；\n]{2,10}。[这|那]是[^。！？；\n]{2,20}", 3.5, "syntax_repeat", "P1", 1),
+            PatternRule("强行顿悟总结", r"(?:终于|才真正)意识到[，,][^。！？；\n]{2,30}失去的不仅仅是", 3.0, "abstract_summary", "P1", 1),
+            PatternRule("反常态审视对比", r"(?:不仅)?没有(?:被)?[^。！？；\n]{2,15}[，,]反而(?:带着|一直在)[^。！？；\n]{2,15}", 2.8, "syntax_repeat", "P1", 1),
+            PatternRule("讲道理式硬核总结", r"(?:更重要的是[，,]这说明|比起[^，,]+[，,][^，,]+更符合[^。！？；\n]+逻辑)", 3.0, "narration_overuse", "P1", 1),
+            PatternRule("烂俗悬疑或终局宣告", r"(?:这一场局|这个局|一切)[，,]才刚刚开始|已经彻底死透了", 3.0, "cliche", "P1", 1),
+            PatternRule("烂俗抽象气息杂糅", r"(?:透着|带着)一(?:股|股子)[^。！？；\n]{2,15}的(?:气|气息|味道|血腥气|威慑|眼睛)", 2.5, "ai_metaphor", "P1", 1),
+            PatternRule("工具人侧面衬托模式", r"这种[^。！？；\n]+若是(?:让|换做)(?:寻常|普通)[^。！？；\n]{2,10}(?:听了|看了)[，,][^。！？；\n]+怕是要[^。！？；\n]+", 3.0, "cliche", "P1", 1),
             PatternRule("俗套濒死比喻", r"濒死的鱼", 3.0, "ai_metaphor", "P1", 1),
             PatternRule("解释性连续暗喻", r"(?:那是在看|也是看|这分明是看)(?:一个|一只|一块).*?[，,。](?:一个|一只|一块|一条).*?", 3.0, "echo_parallel", "P1", 1),
             PatternRule("物化修辞狂热", r"(?:犹如|宛如|就像|仿佛是一(?:只|个|头|块)).*?的(?:丹鼎|灵石|羔羊|布偶|宠物)", 3.0, "ai_metaphor", "P1", 1),
@@ -705,6 +958,22 @@ class EnhancedNovelAISurgery:
             PatternRule("顿了顿", r"顿了顿", 1.0, "transition_overuse", "P2", 1),
             PatternRule("沉默片刻", r"(?:沉默了片刻|静了片刻|沉默片晌|半晌|良久)", 1.0, "transition_overuse", "P2", 1),
             PatternRule("目光落在", r"目光落在", 1.0, "transition_overuse", "P2", 1),
+            
+            # --- V13 新增：高频 AI 转折词与套话拦截 (P2 Fix #10) ---
+            PatternRule("句首然而", r"^然而[，,]", 2.5, "transition_overuse", "P1", 1),
+            PatternRule("尽管但是", r"尽管[^。！？；\n]{1,25}[，,]但[^。！？；\n]{1,25}", 2.0, "syntax_repeat", "P1", 1),
+            PatternRule("不禁", r"不禁", 1.5, "ai_artifact", "P1", 1),
+            PatternRule("下意识地", r"下意识(?:地|的)", 1.2, "ai_artifact", "P1", 1),
+            PatternRule("几乎是本能", r"几乎(?:是)?(?:出于)?本能(?:地|的)?", 2.0, "ai_artifact", "P1", 1),
+            PatternRule("带着一种…的", r"带着一种[^。！？；\n]{2,15}的", 2.5, "naming_trope", "P1", 1),
+            PatternRule("在这一刻", r"(?:在这一刻|在那一瞬间|在这个瞬间|就在这时)", 2.0, "transition_overuse", "P1", 1),
+            PatternRule("某种程度上", r"某种程度上", 2.0, "narration_overuse", "P1", 1),
+            PatternRule("不知为何", r"不知为何", 1.5, "ai_artifact", "P1", 1),
+            PatternRule("说不清道不明", r"说不清道不明", 1.8, "ai_artifact", "P1", 1),
+            PatternRule("或者说", r"[，,]或者说[，,]", 1.5, "narration_overuse", "P1", 1),
+            # 段落结构级 AI 模式 (P2 Fix #11 - 轻量版)
+            PatternRule("尾句升华总结", r"[。！？](?:这大概就是|这或许就是|这便是|也许这就是)[^。！？；\n]{2,30}(?:的含义|的意义|的代价|的真谛|的答案)", 3.0, "abstract_summary", "P1", 1),
+            PatternRule("模板式心理独白", r"(?:她|他)(?:突然|忽然)?(?:意识到|明白了|懂了)[，,][^。！？；\n]{2,40}(?:不过如此|原来如此|竟然如此|就是这样)", 2.5, "ai_artifact", "P1", 1),
         ]
 
         # -----------------------------
@@ -755,9 +1024,70 @@ class EnhancedNovelAISurgery:
         )
 
         # 针对知性提取，初始化进化规则
+        # P0 Fix #3: load_knowledge() 已在 EvolutionEngine.__init__ 中将规则注入到
+        # self.tier1_rules 和 self.all_rules，无需再次手动追加
         self.evolution_engine = EvolutionEngine(self, self.db_path)
-        for r_dict in self.evolution_engine.knowledge["rules"]:
-            self.all_rules.append(PatternRule(**r_dict))
+
+        # P3 Fix #16: 预编译所有正则，避免每次 detect_rules_in_sentence 时重新编译
+        for rule in self.all_rules:
+            try:
+                rule._compiled = re.compile(rule.pattern)
+            except re.error as e:
+                logger.warning(f"规则 '{rule.name}' 的正则编译失败: {e}，将跳过此规则")
+                rule._compiled = None
+
+        # V10: 现代词汇到古代词汇的自动映射 (针对 Historical/Fantasy 背景)
+        self.modern_to_ancient_map = {
+            "手术刀": "柳叶小刀",
+            "保镖": "护卫",
+            "保安": "护院",
+            "警察": "官差",
+            "医生": "大夫",
+            "护士": "医女",
+            "感冒": "风寒",
+            "发烧": "发热",
+            "打火机": "火折子",
+            "手电筒": "灯笼",
+            "汽车": "马车",
+            "摩托车": "快马",
+            "自行车": "马匹",
+            "垃圾桶": "木篓",
+            "沙发": "软榻",
+            "空调": "冰盆",
+            "电灯": "烛火",
+            "电视": "皮影",
+            "电脑": "算筹",
+            "手机": "书信",
+            "电话": "传音",
+            "监控": "眼线",
+            "摄像头": "暗卫",
+            "警报": "鸣金",
+            "信号弹": "响箭",
+            "降落伞": "飞天兜",
+            "防弹衣": "金丝软甲",
+            "西装": "长衫",
+            "高跟鞋": "花盆底",
+            "丝袜": "罗袜",
+            "内衣": "中衣",
+            "胸罩": "肚兜",
+            "内裤": "亵裤",
+            "马桶": "恭桶",
+            "电梯": "吊篮",
+            "直升机": "木鸢",
+            "狙击枪": "神臂弓",
+            "手枪": "袖箭",
+            "炸弹": "火雷",
+            "网络": "情报网",
+            "预估": "预想",
+            "分析": "揣摩",
+            "数据": "卷宗",
+            "逻辑": "道理",
+            "氛围": "气氛",
+            "项目": "差事",
+            "效率": "脚程",
+            "计划": "打算",
+            "目标": "念想",
+        }
 
         # 词典库
         self.dialogue_verbs = ["说", "道", "问", "答", "喊", "喝", "笑", "骂", "低声", "开口"]
@@ -860,22 +1190,16 @@ class EnhancedNovelAISurgery:
         if not text:
             return []
 
-        pieces = re.split(r"(?<=[。！？；!?;])", text)
+        # Fix variable-width lookbehind by using capturing groups in split
+        # This keeps the delimiter in the resulting list
+        pieces = re.split(r"([。！？；!?;][”’]?)", text)
         sentences = []
-        buffer = ""
-
-        for piece in pieces:
-            if not piece:
-                continue
-            buffer += piece
-            if re.search(r"[。！？；!?;]$", piece):
-                sentence = buffer.strip()
-                if sentence:
-                    sentences.append(sentence)
-                buffer = ""
-
-        if buffer.strip():
-            sentences.append(buffer.strip())
+        for i in range(0, len(pieces) - 1, 2):
+            sent = (pieces[i] + pieces[i+1]).strip()
+            if sent:
+                sentences.append(sent)
+        if len(pieces) % 2 != 0 and pieces[-1].strip():
+            sentences.append(pieces[-1].strip())
         return sentences
 
     @staticmethod
@@ -891,7 +1215,10 @@ class EnhancedNovelAISurgery:
     ) -> List[Hit]:
         hits: List[Hit] = []
         for rule in self.all_rules:
-            for m in re.finditer(rule.pattern, sentence):
+            compiled = getattr(rule, '_compiled', None)
+            if compiled is None:
+                continue
+            for m in compiled.finditer(sentence):
                 hits.append(
                     Hit(
                         chapter=chapter,
@@ -998,6 +1325,27 @@ class EnhancedNovelAISurgery:
             hits_by_severity={"P0": 0, "P1": 0, "P2": 0}
         )
 
+    def clean_ai_clusters(self, text: str, applied: List[str]) -> str:
+        """Paragraph-level cleaning for multi-sentence AI patterns."""
+        # 模式1: 蜕变宣告类
+        if re.search(r"(?:她|他|自己)?(?:知道|明白|清楚|深知)[，,]?从(?:这|那)(?:一刻|个瞬间|时|刻)起[，,].*?(?:死透了|死去了|消失了|不复存在了|成了过去|翻篇了|不再是)", text):
+            applied.append("V11:蜕变宣告删除")
+            if len(text) < 30:
+                return ""
+        # 模式2: 回声式否定排比 (这不是...这不是...这是...) -> 直接删除 (AI感极重，真人作家不这么煽情)
+        # 兼容 2 次或 3 次以上的重复
+        pattern_triple = r"(?:这不是|这并非)[^，。！？；：\n]{1,15}[。！？；：\n\s]+(?:这不是|这并非)[^，。！？；：\n]{1,15}[。！？；：\n\s]+(?:这是|这才是)[^。！？；：\n]{1,60}[。！？；：\n]?"
+        pattern_double = r"(?:这不是|这并非)[^，。！？；：\n]{1,15}[。！？；：\n\s]+(?:而是|这才是)[^。！？；：\n]{1,60}[。！？；：\n]?"
+        
+        if re.search(pattern_triple, text, re.S):
+            applied.append("V11:排比煽情删除(Triple)")
+            text = re.sub(pattern_triple, "", text, flags=re.S)
+        elif re.search(pattern_double, text, re.S):
+            # 仅在非对话且叙述感强时删除
+            applied.append("V11:排比煽情删除(Double)")
+            text = re.sub(pattern_double, "", text, flags=re.S)
+        return text
+
     def detect_empty_transition_blocks(self, paragraph_infos: Sequence[ParagraphInfo]) -> List[Dict[str, object]]:
         blocks: List[Dict[str, object]] = []
         current: List[ParagraphInfo] = []
@@ -1045,6 +1393,8 @@ class EnhancedNovelAISurgery:
 
     @staticmethod
     def apply_outside_quotes(text: str, func: Callable[[str], str]) -> str:
+        # Normalize quotes first to ensure consistent splitting
+        text = EnhancedNovelAISurgery.normalize_quotes(text)
         parts = re.split(r'(“[^”]*”)', text)
         out: List[str] = []
         for part in parts:
@@ -1057,7 +1407,28 @@ class EnhancedNovelAISurgery:
         return "".join(out)
 
     @staticmethod
+    def normalize_quotes(text: str) -> str:
+        """Convert straight quotes to Chinese curly quotes based on context."""
+        # Handle full-width straight quotes as well
+        text = text.replace('＂', '"')
+        if '"' not in text:
+            return text
+            
+        parts = text.split('"')
+        new_parts = []
+        for i, part in enumerate(parts[:-1]):
+            new_parts.append(part)
+            # Toggle between opening and closing quotes
+            new_parts.append('“' if i % 2 == 0 else '”')
+        new_parts.append(parts[-1])
+        return "".join(new_parts)
+
+    @staticmethod
     def cleanup_text_fragment(text: str) -> str:
+        # Normalize quotes and punctuation to Chinese standards
+        text = EnhancedNovelAISurgery.normalize_quotes(text)
+        text = text.replace(',', '，').replace('!', '！').replace('?', '？').replace(':', '：').replace(';', '；')
+        
         text = re.sub(r"\s+", "", text)
         text = re.sub(r"[，,]{2,}", "，", text)
         text = re.sub(r"[。]{2,}", "。", text)
@@ -1104,8 +1475,9 @@ class EnhancedNovelAISurgery:
             applied.append("不是A而是B")
             b = m.group(2).strip("，, ")
             tail = m.group(3) if m.group(3) and m.group(3) not in {"，", ","} else ""
-            if len(b) <= 10:
-                return f"分分是{b}{tail}"
+            if len(b) <= 12:
+                # 尝试清理前面的主语
+                return f"分明是{b}{tail}"
             return f"{b}{tail}"
 
         def repl_rather(m: re.Match[str]) -> str:
@@ -1121,12 +1493,12 @@ class EnhancedNovelAISurgery:
             return f"{b}{tail}"
 
         text = re.sub(
-            r"不是([^，。！？；\n]{1,20})[，, ]?而是([^。！？；\n]{1,24})([。！？；，,]|$)",
+            r"不是([^，。！？；：\n]{1,20})[，, ]?而是([^。！？；：\n]{1,24})([。！？；：，,]|$)",
             repl_not_but,
             text,
         )
         text = re.sub(
-            r"不是([^，。！？；\n]{1,20})[，, ]?也不是([^。！？；\n]{1,24})([。！？；，,]|$)",
+            r"不是([^，。！？；：\n]{1,20})[，, ]?也不是([^。！？；：\n]{1,24})([。！？；：，,]|$)",
             repl_not_but,
             text,
         )
@@ -1141,28 +1513,85 @@ class EnhancedNovelAISurgery:
         text = re.sub(r"取而代之(?:的|地)?(?:是)?([^。！？；\n]{1,30})", repl_replace, text)
         return text
 
-    def rewrite_explanatory_narration(self, text: str, applied: List[str]) -> str:
+    def rewrite_explanatory_narration(self, text: str, applied: List[str], role: str = "") -> str:
         before = text
-        text = re.sub(r"([她他])(?:似乎|仿佛)?(?:知道|明白|意识到)，?", "", text)
+        
+        # V11: 针对用户反馈的高频AI句式直接抹杀 (放在最前面，防止被后续通配符破坏)
+        # 模式1: 察觉到XX语调不对 -> XX声音冷了下来 / 变了调
+        new_text = re.sub(r"(?:[她他])?(?:察觉|意识|发现|感觉|注意)(?:到)?(?:了)?(?:今日)?([^，。！？；\n的]{1,15})(?:的)?(?:语调|语气)(?:不对|有异|不对劲|异常|变了)", r"\1的声音冷了下来", text)
+        if new_text != text:
+            applied.append("V11:语调优化")
+            text = new_text
+            
+        # 模式2: 那种以往看向他时满是仰慕的眼神消失了 -> 眸子里那点温度散了个干净
+        new_text = re.sub(r"(?:那(?:种|张))?(?:以往|曾经|过去)?看向(?:他|她)时(?:满是|充满)?仰慕的眼神(?:消失了|不见了|没了|不再|换成了)", "眸子里那点温度散了个干净", text)
+        if new_text != text:
+            applied.append("V11:眼神优化")
+            text = new_text
+            
+        # 模式3: 是在向...宣告/展示/证明 -> ，如此这般，
+        new_text = re.sub(r"[，, ]?是在向[^。！？；：\n]{1,20}(?:宣告|展示|证明|表达)(?:：|:|，|,)?", "，如此这般，", text)
+        if new_text != text:
+            applied.append("V11:宣告优化")
+            text = new_text
+            
+        # 模式4: 这不仅是...更是... -> (直接进入重点)
+        new_text = re.sub(r"这不仅(?:仅)?是[^，。！？；：\n]{1,20}更是([^，。！？；：\n]{1,30})", r"这合该是\1", text)
+        if new_text != text:
+            applied.append("V11:递进优化")
+            text = new_text
+            
+        # 模式5: 尝试清理掉 '今日他/他此刻' 这种AI补白
+        text = re.sub(r"(?:今日|此刻|这时|这会儿|现在)(?:他|她|它)", "", text)
+        
+        # 模式6: 没有那种A，反而带着一种B -> 替换为更直接的表达，而不是简单删除
+        # 工业级增强：涵盖更多变体，如 "见不到...有的只是..."
+        pattern_6 = r"(?:眼神|目光|语气|神色|动作|姿态|表现|气质)?(?:里|中)?(?:没有|见不到|看不到|见不到那种)(?:那种|这种|所谓(?:的)?)[^，。！？；：\n]{1,25}[，, ]?(?:反而|有的只是|取而代之的是|却)(?:带着|透着|溢出|有一股|有一种|流露出|是)(?:一种|一股|一点)?([^。！？；：\n]{1,35})"
+        if re.search(pattern_6, text):
+            applied.append("V11:二元对比废话优化")
+            text = re.sub(pattern_6, r"只透着\1", text)
+            
+        # 模式7: 极其生硬的AI抽象标签 (XX般的XX) -> 也应该改写而非直接删除
+        pattern_7 = r"(?:[^，。！？；：\n]{1,10}般的(?:探究|深意|意味|情绪|感觉|感|反应|逻辑|存在|气息|样子|状态|高度|深度|冷意))"
+        if re.search(pattern_7, text):
+            applied.append("V11:抽象标签优化")
+            text = re.sub(pattern_7, "", text) # 虽然是删除，但范围被缩小了
+            
+        # 模式8: 同位语补白 (这个XX的牺牲品/工具) -> 优化
+        new_text = re.sub(r"这个([^，。！？；：\n]{2,30})的(?:牺牲品|玩物|棋子|工具|存在|宿命|角色|反派)", r"那个\1的人", text)
+        if new_text != text:
+            applied.append("V11:同位语标签优化")
+            text = new_text
+
+        # 模式9: 重生/蜕变宣告 (她知道，从这一刻起...死透了) -> 直接删除 (因为这本身就是废话总结)
+        if re.search(r"(?:她|他|自己)?(?:知道|明白|清楚|深知)[，,]?从(?:这|那)(?:一刻|个瞬间|时|刻)起[，,].*?(?:死透了|死去了|消失了|不复存在了|成了过去|翻篇了|不再是|彻底告别)", text):
+            applied.append("V11:蜕变宣告删除")
+            # 标记需要人工或Agent重写，这里先置空或保留主体
+            # 暂时保留部分避免全删
+            text = re.sub(r"(?:她|他|自己)?(?:知道|明白|清楚|深知)[，,]?从(?:这|那)(?:一刻|个瞬间|时|刻)起[，,]", "", text)
+
+        # 移除强烈的叙述感引子 (仅在叙述性段落中执行，避免误删对话和正常叙事)
+        if role in ["exposition", "neutral"]:
+            text = re.sub(r"([她他])(?:似乎|仿佛)?(?:知道|明白|意识到|察觉到|发现|感觉到|注意到|看出来)了?，?", "", text)
+        if role == "exposition":
+            # 增加跨度到30个字符，防止长句失效 (仅匹配一些常见的无用定语前缀)
+            text = re.sub(r"^(?:那种|这种|所谓(?:的)?|这一(?:次|个)|那个|这个|如此(?:的)?|那样(?:的)?)([^。！？；\n]{1,30})$", r"\1", text)
+        
         if text != before:
-            applied.append("她知道/他知道")
+            applied.append("叙述感清理")
 
         replacements = {
             r"很清楚，?": "",
             r"显然，?": "",
             r"不难看出，?": "",
-            r"所谓的，?": "",
-            r"名为[^。！？；\n]{1,15}的": "",
-            r"更准确地说，?": "",
-            r"本质上，?": "",
-            r"这说明": "这下",
-            r"这便是": "这也就是",
-            r"这下子": "也就是",
-            r"这种": "这种",
-            r"这意味着": "这下",
+            r"意味着": "这下",
             r"她并非": "她不是",
             r"他并非": "他不是",
+            r"察觉到": "",
+            r"意识到": "",
+            r"发现到": "",
         }
+        
         for pattern, repl in replacements.items():
             new_text = re.sub(pattern, repl, text)
             if new_text != text:
@@ -1223,7 +1652,12 @@ class EnhancedNovelAISurgery:
         return paragraph, applied_total
 
     def rewrite_cliche_phrases(self, text: str, applied: List[str]) -> str:
+        # P2 Fix #12: 分离「直接字面量匹配」和「规则名匹配」两类 key
+        # 规则名类 key（含有大写字母X/Y或括号）不可能出现在原文中，跳过
         for key, options in self.rewrite_templates.items():
+            # 跳过规则名类的 key（包含 X/Y、括号等元字符，不是原文片段）
+            if re.search(r'[A-Z()（）]', key):
+                continue
             if key in text:
                 replacement = self.stable_pick(text + key, options)
                 text = text.replace(key, replacement)
@@ -1247,7 +1681,8 @@ class EnhancedNovelAISurgery:
 
         if mode == "aggressive" and self.is_dead_air_sentence(text):
             applied.append("删除空转句")
-            return ""
+            if len(text) < 30:
+                return ""
 
         if mode == "aggressive" and self.is_pure_environment_sentence(text):
             short = re.sub(r"(?:外头的|屋内的|四周的|周遭的)", "", text)
@@ -1266,6 +1701,17 @@ class EnhancedNovelAISurgery:
             if count_before > 1:
                 text = self.remove_repeated_token(text, token)
                 applied.append(f"去重:{token}")
+        return text
+
+    def map_modern_to_ancient(self, text: str, background: str, applied: List[str]) -> str:
+        if background not in ["Historical", "Fantasy"]:
+            return text
+        
+        before = text
+        for modern, ancient in self.modern_to_ancient_map.items():
+            if modern in text:
+                text = text.replace(modern, ancient)
+                applied.append(f"词汇映射:{modern}->{ancient}")
         return text
 
     def safety_check_rewrite(self, original: str, revised: str, mode: str) -> str:
@@ -1302,10 +1748,14 @@ class EnhancedNovelAISurgery:
 
             local = self.rewrite_contrast_patterns(local, applied)
             local = self.rewrite_replacement_patterns(local, applied)
-            local = self.rewrite_explanatory_narration(local, applied)
-            local = self.rewrite_explanatory_narration(local, applied)
+            local = self.rewrite_explanatory_narration(local, applied, paragraph_info.role)
             local = self.rewrite_transition_fillers(local, applied)
             local = self.rewrite_cliche_phrases(local, applied)
+            
+            # 现代词映射
+            if paragraph_info.role != "dialogue": # 对话中可能允许少量现代词（如穿越者），但默认也映射
+                bg = self.evolution_engine.get_book_bg() # 获取当前书籍背景
+                local = self.map_modern_to_ancient(local, bg, applied)
             
             # Catch suspended warnings in the sentence
             sdt_flags = self.sdt_transformer.check(local)
@@ -1343,7 +1793,11 @@ class EnhancedNovelAISurgery:
         mode: str = "conservative",
         min_hits_to_rewrite: int = 1,
         enable_semantic_opt: bool = True,
+        export_tasks_only: bool = True
     ) -> Tuple[str, List[SentenceChange]]:
+        if context:
+            self.evolution_engine.set_book_bg(context.background)
+        
         paragraphs = self.split_paragraphs(chapter_text)
         revised_paragraphs_p1: List[str] = []
         changes: List[SentenceChange] = []
@@ -1358,6 +1812,9 @@ class EnhancedNovelAISurgery:
 
         for p_idx, paragraph in enumerate(paragraphs):
             p_info = self.classify_paragraph(chapter_name, p_idx, paragraph)
+            p_applied = []
+            paragraph = self.clean_ai_clusters(paragraph, p_applied)
+            
             p_hits: List[Hit] = []
             sentences = self.split_sentences(paragraph)
             
@@ -1462,20 +1919,49 @@ class EnhancedNovelAISurgery:
             task_path = self.agent_task_gen.generate_task(chapter_name, rev_text, context, changes, structure_issues=structure_issues)
 
             print(f"📝 已生成 IDE Agent 协作任务: {task_path.name}")
-            print(f"⚠️ 请 IDE Agent (如 Antigravity) 分别处理该任务。")
+            
+            # --- V11 Execute and Verify Loop ---
+            rev_text = self.execute_and_verify_agent_task(chapter_name, task_path, rev_text, context)
             
         return rev_text, changes
+
+    def execute_and_verify_agent_task(self, chapter_name: str, task_path: Path, original_text: str, context: NovelContext) -> str:
+        print(f"🤖 正在执行 Agent 自动重写任务: {task_path.name} ...")
+        prompt_instructions = task_path.read_text(encoding="utf-8")
+        sys_prompt = "你是一个顶级的工业级小说主编。请严格按照提供的微指令进行局部和全局改写，只输出重写后的正文，不要输出任何代码块标记（```）或废话。"
+        
+        res = call_llm_with_fallback(prompt_instructions, sys_prompt)
+        if not res:
+            logger.error(f"❌ LLM 自动重写任务失败，返回局部正则修改的原文。")
+            return original_text
+            
+        final_text = res.replace('```markdown', '').replace('```', '').strip()
+        
+        out_path = task_path.parent / f"{chapter_name}_LLM最终定稿.md"
+        out_path.write_text(final_text, encoding="utf-8")
+        
+        print(f"🔍 正在进行质检闭环回验 ...")
+        verify_report = self.analyze_chapter(chapter_name, final_text, context)
+        if verify_report["ai_score"] > 60 or len(verify_report.get("structure_issues", [])) > 2:
+            print(f"⚠️ [警告] {chapter_name} 重写后质检未达优 (AI Score: {verify_report['ai_score']})，已标记 <Needs_Human_Review>")
+            warning_path = task_path.parent / f"{chapter_name}_Needs_Human_Review.txt"
+            warning_path.write_text(f"质检未通过！\nAI Score: {verify_report['ai_score']}\n结构问题:\n" + "\n".join(verify_report.get("structure_issues", [])), encoding="utf-8")
+        else:
+            print(f"✅ {chapter_name} 重写质检通过！")
+            
+        return final_text
 
     def rewrite_book(
         self,
         chapters: Sequence[Tuple[str, str]],
         mode: str = "conservative",
         min_hits_to_rewrite: int = 1,
+        export_tasks_only: bool = True
     ) -> Tuple[List[Tuple[str, str]], List[SentenceChange]]:
         revised_chapters: List[Tuple[str, str]] = []
         all_changes: List[SentenceChange] = []
         for name, text in chapters:
-            rev_txt, changes = self.rewrite_chapter(name, text, mode, min_hits_to_rewrite)
+            rev_txt, changes = self.rewrite_chapter(name, text, mode=mode, min_hits_to_rewrite=min_hits_to_rewrite, export_tasks_only=export_tasks_only)
             revised_chapters.append((name, rev_txt))
             all_changes.extend(changes)
         return revised_chapters, all_changes
@@ -1536,6 +2022,22 @@ class EnhancedNovelAISurgery:
         sensory_report = self.sensory_weaver.diagnose(chapter_text)
         if sensory_report['visual_dominant']:
             structure_issues.append(f"感官极度倾斜视觉 ({sensory_report['total_non_visual']} 个非视觉)，缺乏沉浸体感。")
+            
+        if "楔" in chapter_name or "序" in chapter_name:
+            hook_report = self.prologue_hook.analyze_opening(chapter_text[:500])
+            if not hook_report['has_hook']:
+                for iss in hook_report['issues']:
+                    structure_issues.append(f"【开篇留人警告】: {iss}")
+
+        # P1 Fix #6: 集成身份论断式总结检测器
+        identity_issues = self.identity_summary_detector.check(chapter_text)
+        for iss in identity_issues:
+            structure_issues.append(f"身份论断式总结: '{iss['hit'][:40]}...' - {iss['reason']}")
+        
+        # P1 Fix #6: 集成套路词/油腻微表情检测器
+        cliche_issues = self.cliche_express_detector.check(chapter_text)
+        for iss in cliche_issues:
+            structure_issues.append(f"套路词/油腻微表情: '{iss['hit']}' - {iss['reason']}")
         
         for p_idx, paragraph in enumerate(paragraphs):
             info = self.classify_paragraph(chapter_name, p_idx, paragraph)
@@ -1554,6 +2056,17 @@ class EnhancedNovelAISurgery:
                 sdt_flags = self.sdt_transformer.check(sentence)
                 for flag in sdt_flags:
                     hits.append(Hit(chapter_name, p_idx, s_idx, "SDT违规", flag, sentence, 0, len(sentence), 1.0, "P2"))
+                
+                # P0 Fix #2: 集成解释性尾注检测器
+                tail_tag_issues = self.tail_tag_detector.check(sentence)
+                for iss in tail_tag_issues:
+                    hits.append(Hit(chapter_name, p_idx, s_idx, "explanatory_tail_tag", f"解释性尾注: {iss['reason']}", sentence, 0, len(sentence), 3.0, "P1"))
+                
+                # P1 Fix #5: 跨句解释性尾注检测
+                if s_idx > 0:
+                    cross_result = self.tail_tag_detector._analyze_cross_sentence(sents[s_idx - 1], sentence)
+                    if cross_result:
+                        hits.append(Hit(chapter_name, p_idx, s_idx, "explanatory_tail_tag", f"跨句解释性尾注: {cross_result['reason']}", sentence, 0, len(sentence), 3.0, "P1"))
                     
                 if hits:
                     all_hits.extend(hits)
@@ -1606,7 +2119,7 @@ class EnhancedNovelAISurgery:
         tag_c = Counter()
         for p in p_infos: tag_c.update(p.tags)
         
-        per_k = max(words / 1000.0, 1e-6)
+        per_k = max(words / 1000.0, 0.5)  # 设置下限，防止短文本分数虚高
         
         score_base = (
             sev_c.get("P0", 0) * 15.0 +
@@ -1710,6 +2223,10 @@ def main():
                     print(f"  ✅ 已学习 [{label}] -> 风格: {tag} | 感官指数: {stats['sensory']} | 节奏方差: {stats['variance']}")
         return
     
+    # P0 Fix #4: 防止 in_p 为 None 时空指针
+    if in_p is None:
+        parser.error("--input 参数在非 --learn 模式下为必填项")
+        return
     if not in_p.exists():
         print(f"❌ 路径不存在: {in_p}")
         return
